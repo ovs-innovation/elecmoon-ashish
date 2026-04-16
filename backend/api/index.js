@@ -47,7 +47,11 @@ app.use(express.json({ limit: "4mb" }));
 app.use(helmet());
 
 app.use(cors({
-  origin: true, 
+  origin: [
+    "http://elecmoon.vastoratech.com",
+    "https://elecmoon.vastoratech.com",
+     "https://elecmoon.vastoratech.com/api"
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
