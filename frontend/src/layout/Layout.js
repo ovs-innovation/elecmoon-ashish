@@ -1,0 +1,79 @@
+import Head from "next/head";
+import { useRouter } from "next/router";
+import { ToastContainer } from "react-toastify";
+import { FiPhoneCall, FiChevronUp } from "react-icons/fi";
+
+//internal import
+
+import Navbar from "@layout/navbar/Navbar";
+import Footer from "@layout/footer/Footer";
+import MobileFooter from "@layout/footer/MobileFooter";
+import FeatureCard from "@components/feature-card/FeatureCard";
+import CartDrawer from "@components/drawer/CartDrawer";
+import StatsBar from "@components/common/StatsBar";
+
+const Layout = ({ title, description, children }) => {
+  const router = useRouter();
+
+  const handleScrollTop = () => {
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
+  return (
+    <>
+      <ToastContainer />
+
+      <div className="font-sans">
+        <Head>
+          <title>
+            {title
+              ? `PowerQ | ${title}`
+              : "PowerQ – Professional Test and Tag Services in Melbourne"}
+          </title>
+          {description && (
+            <meta
+              name="description"
+              content={
+                description ||
+                "Discover personalized merchandise, branded giveaways, and advertising essentials. Ideal for businesses, events, and promotions"
+              }
+            />
+          )}
+          <link rel="icon" href="/favicon.png" />
+        </Head>
+        <Navbar />
+        <CartDrawer />
+        <div className="bg-gray-50">{children}</div>
+        {/* Floating action buttons */}
+        <div className="fixed right-4 md:right-6 bottom-24 flex flex-col gap-3 z-40">
+          <a
+            href="tel:+611300755096"
+            className="w-12 h-12 rounded-lg bg-red-600 text-white flex items-center justify-center shadow-lg hover:bg-red-700 transition"
+            aria-label="Call PowerQ"
+          >
+            <FiPhoneCall className="w-6 h-6" />
+          </a>
+          <button
+            onClick={handleScrollTop}
+            className="w-12 h-12 rounded-lg bg-red-600 text-white flex items-center justify-center shadow-lg hover:bg-red-700 transition"
+            aria-label="Back to top"
+            type="button"
+          >
+            <FiChevronUp className="w-6 h-6" />
+          </button>
+        </div>
+        <MobileFooter />
+        {router.pathname === "/" && <StatsBar />}
+        <div className="w-full">
+          <div className="border-t border-gray-100 w-full">
+            <Footer />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+};
+
+export default Layout;

@@ -1,0 +1,980 @@
+import React, { useContext, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/router";
+import Image from "next/image";
+import Link from "next/link";
+import { useForm } from "react-hook-form";
+import { useCart } from "react-use-cart";
+import { toast } from "react-toastify";
+import {
+  FiCreditCard,
+  FiMinus,
+  FiPlus,
+  FiTruck,
+  FiShoppingBag,
+  FiLock,
+  FiArrowLeft,
+} from "react-icons/fi";
+
+// internal import
+import Layout from "@layout/Layout";
+import OrderServices from "@services/OrderServices";
+import { UserContext } from "@context/UserContext";
+import useUtilsFunction from "@hooks/useUtilsFunction";
+
+const Checkout = () => {
+  const router = useRouter();
+  const { items, emptyCart, updateItemQuantity } = useCart();
+  const { state: { userInfo } } = useContext(UserContext);
+  const { currency, getNumber } = useUtilsFunction();
+
+  const [loading, setLoading] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState("Cash");
+  const [checkoutStep, setCheckoutStep] = useState(1); // 1 = Details, 2 = Review & Payment
+  const [shippingData, setShippingData] = useState(null);
+
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    formState: { errors },
+  } = useForm();
+
+  const [buyNowItem, setBuyNowItem] = useState(null);
+
+  const isBuyNowFlow = Boolean(router.query?.buyNow && router.query?.id);
+
+  const getQueryString = (value) => {
+    if (Array.isArray(value)) return value[0];
+    return value;
+  };
+
+  // Parse Buy Now item if it exists in query
+  useEffect(() => {
+    if (router.query.buyNow && router.query.id) {
+      const qId = getQueryString(router.query.id);
+      const qTitle = getQueryString(router.query.title);
+      const qPrice = getQueryString(router.query.price);
+      const qImage = getQueryString(router.query.image);
+      const qQty = getQueryString(router.query.quantity);
+      const qDeliveryCharge = getQueryString(router.query.deliveryCharge);
+
+      setBuyNowItem({
+        id: qId,
+        name: qTitle,
+        price: parseFloat(qPrice),
+        image: qImage,
+        quantity: parseInt(qQty) || 1,
+        minQty: parseInt(qQty) || 1,
+        itemTotal: parseFloat(qPrice) * (parseInt(qQty) || 1),
+        deliveryCharge: parseFloat(qDeliveryCharge) || 0,
+        gstPercentage: parseFloat(getQueryString(router.query.gstPercentage)) || 0,
+        basePrice: parseFloat(getQueryString(router.query.basePrice)) || parseFloat(qPrice),
+        sku: getQueryString(router.query.sku) || "",
+        barcode: getQueryString(router.query.barcode) || "",
+        variant: {} // Optional: could pass variant in query if needed
+      });
+
+    }
+  }, [
+    router.query.buyNow,
+    router.query.id,
+    router.query.title,
+    router.query.price,
+    router.query.image,
+    router.query.quantity,
+    router.query.deliveryCharge,
+    router.query.gstPercentage,
+    router.query.basePrice,
+    router.query.sku,
+    router.query.barcode,
+  ]);
+
+
+  const incrementBuyNow = () => {
+    setBuyNowItem((prev) => {
+      if (!prev) return prev;
+      const nextQty = prev.quantity + 1;
+      return {
+        ...prev,
+        quantity: nextQty,
+        itemTotal: prev.price * nextQty,
+      };
+    });
+  };
+
+  const decrementBuyNow = () => {
+    setBuyNowItem((prev) => {
+      if (!prev) return prev;
+      const minQty = prev.minQty || 1;
+      const nextQty = Math.max(minQty, prev.quantity - 1);
+      return {
+        ...prev,
+        quantity: nextQty,
+        itemTotal: prev.price * nextQty,
+      };
+    });
+  };
+
+  // Determine current items to display/order
+  const orderItems = useMemo(() => {
+    const currentItems = buyNowItem ? [buyNowItem] : items;
+    return currentItems.map((item) => {
+      const unitPrice = parseFloat(item?.price) || 0;
+      const quantity = parseInt(item?.quantity) || 0;
+      const itemTotal =
+        typeof item?.itemTotal === "number"
+          ? item.itemTotal
+          : parseFloat(item?.itemTotal) || unitPrice * quantity;
+
+      return {
+        ...item,
+        quantity,
+        price: unitPrice,
+        itemTotal,
+        variant: item.variant || {},
+      };
+    });
+  }, [buyNowItem, items]);
+
+  const currentTotal = useMemo(() => {
+    return orderItems.reduce(
+      (sum, item) => sum + (parseFloat(item.itemTotal) || 0),
+      0
+    );
+  }, [orderItems]);
+
+  const deliveryCharges = useMemo(() => {
+    return orderItems.reduce(
+      (sum, item) =>
+        sum +
+        (parseFloat(item?.deliveryCharge) || 0) *
+        (parseInt(item?.quantity) || 0),
+      0
+    );
+  }, [orderItems]);
+
+  const grandTotal = currentTotal + deliveryCharges;
+
+  // Razorpay expects amount to be in rupees; backend multiplies by 100
+  const razorpayAmount = Math.round(grandTotal * 100) / 100;
+
+  // Populate form if user info exists
+  useEffect(() => {
+    if (userInfo) {
+      setValue("firstName", userInfo.name?.split(" ")[0] || "");
+      setValue("lastName", userInfo.name?.split(" ").slice(1).join(" ") || "");
+      setValue("email", userInfo.email || "");
+      setValue("phoneNumber", userInfo.phone || "");
+    }
+  }, [userInfo, setValue]);
+
+  const loadRazorpayScript = async () => {
+    return new Promise((resolve, reject) => {
+      if (typeof window === "undefined") {
+        return reject(new Error("Window is not available"));
+      }
+
+      const existing = document.getElementById("razorpay-checkout-js");
+      if (existing) return resolve(true);
+
+      const script = document.createElement("script");
+      script.id = "razorpay-checkout-js";
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.async = true;
+      script.onload = () => resolve(true);
+      script.onerror = () =>
+        reject(new Error("Failed to load Razorpay checkout script"));
+      document.body.appendChild(script);
+    });
+  };
+
+  const placeOrder = async () => {
+    if (!shippingData) return;
+    try {
+      setLoading(true);
+
+      const orderPayloadBase = {
+        user_info: {
+          name: `${shippingData.firstName} ${shippingData.lastName}`.trim(),
+          email: shippingData.email,
+          contact: shippingData.phoneNumber,
+          address: shippingData.address,
+          city: shippingData.city,
+          country: shippingData.country,
+          zipCode: shippingData.zipCode,
+        },
+        cart: orderItems.map((item) => ({
+          id: item.id,
+          title: item.name,
+          image: item.image,
+          price: item.price,
+          quantity: item.quantity,
+          itemTotal: item.itemTotal,
+          variant: item.variant || {},
+          gstPercentage: item.gstPercentage || 0,
+          basePrice: item.basePrice || item.price,
+          sku: item.sku || "",
+          barcode: item.barcode || "",
+        })),
+
+        subTotal: currentTotal,
+        shippingOption: "Product Delivery",
+        shippingCost: deliveryCharges,
+        discount: 0,
+        total: grandTotal,
+      };
+
+      if (paymentMethod === "Cash") {
+        const orderData = {
+          ...orderPayloadBase,
+          paymentMethod: "Cash",
+          status: "Pending",
+        };
+
+        const res = await OrderServices.addOrder(orderData);
+        toast.success("Order placed successfully!");
+        if (!buyNowItem) emptyCart();
+        router.push(`/user/thank-you?orderId=${res._id}`);
+        return;
+      }
+
+      if (paymentMethod === "Razorpay") {
+        const razorpayKeyId = process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
+        if (!razorpayKeyId) {
+          throw new Error(
+            "Razorpay key id is not configured. Add NEXT_PUBLIC_RAZORPAY_KEY_ID to frontend .env."
+          );
+        }
+
+        const razorpayOrder = await OrderServices.createOrderByRazorPay({
+          amount: razorpayAmount,
+        });
+        await loadRazorpayScript();
+
+        const fullName = `${shippingData.firstName} ${shippingData.lastName}`.trim();
+
+        const options = {
+          key: razorpayKeyId,
+          amount:
+            razorpayOrder?.amount ?? Math.round(grandTotal * 100),
+          currency: razorpayOrder?.currency ?? "INR",
+          name: "PowerQ",
+          description: "PowerQ Order Payment",
+          order_id: razorpayOrder?.id,
+          prefill: {
+            name: fullName,
+            email: shippingData.email,
+            contact: shippingData.phoneNumber,
+          },
+          handler: async function (response) {
+            try {
+              const verifyPayload = {
+                ...orderPayloadBase,
+                paymentMethod: "Razorpay",
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              };
+
+              const createdOrder =
+                await OrderServices.verifyRazorpayPaymentAndAddOrder(verifyPayload);
+
+              toast.success("Payment successful! Order placed.");
+              if (!buyNowItem) emptyCart();
+              router.push(`/user/thank-you?orderId=${createdOrder._id}`);
+            } catch (err) {
+              toast.error(err.response?.data?.message || err.message);
+            } finally {
+              setLoading(false);
+            }
+          },
+          theme: { color: "#0b1d3d" },
+          modal: {
+            ondismiss: function () {
+              setLoading(false);
+            },
+          },
+        };
+
+        const rzp = new window.Razorpay(options);
+        rzp.on("payment.failed", function (resp) {
+          toast.error(resp?.error?.description || "Payment failed. Please try again.");
+          setLoading(false);
+        });
+        rzp.open();
+        return;
+      }
+
+      throw new Error("Unsupported payment method selected.");
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message);
+      setLoading(false);
+    }
+  };
+
+  // Step 1 submit: only store shipping details, then go to payment step
+  const onShippingSubmit = async (data) => {
+    setShippingData(data);
+    setCheckoutStep(2);
+  };
+
+  if (
+    orderItems.length === 0 &&
+    !loading &&
+    !isBuyNowFlow
+  ) {
+    return (
+      <Layout title="Checkout" description="Complete your order at PowerQ">
+        <div className="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
+          <div className="w-24 h-24 bg-gray-50 rounded-full flex items-center justify-center mb-6">
+            <FiShoppingBag className="w-12 h-12 text-gray-300" />
+          </div>
+          <h2 className="text-2xl font-black text-[#0b1d3d] mb-2 uppercase">Your cart is empty</h2>
+          <p className="text-gray-500 mb-8 max-w-md">
+            Looks like you haven't added anything to your cart yet. Browse our professional products to get started.
+          </p>
+          <Link
+            href="/products"
+            className="bg-[#0b1d3d] text-white px-10 py-4 rounded-xl font-bold hover:bg-[#162542] transition-all shadow-xl active:scale-95"
+          >
+            Start Shopping
+          </Link>
+        </div>
+      </Layout>
+    );
+  }
+
+  return (
+    <Layout title="Checkout" description="Complete your order at PowerQ">
+      <div className="bg-gray-50 min-h-screen py-10 lg:py-20">
+        <div className="max-w-screen-2xl mx-auto px-4 sm:px-10">
+          {/* Go Back Button */}
+          <div className="mb-8">
+            <button
+              onClick={() => router.back()}
+              className="flex items-center gap-2 text-[#0b1d3d] hover:opacity-70 transition-all font-black uppercase tracking-widest text-xs group"
+            >
+              <div className="w-8 h-8 rounded-full bg-white shadow-sm border border-gray-100 flex items-center justify-center group-hover:bg-gray-50 transition-colors">
+                <FiArrowLeft className="w-4 h-4" />
+              </div>
+              Go Back
+            </button>
+          </div>
+
+          <div className="flex flex-col lg:flex-row gap-10">
+            {/* Left Column: Shipping + Payment */}
+            <div className="lg:w-2/3">
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="p-6 text-white flex items-center justify-between bg-[#0b1d3d]">
+                  <div className="flex items-center gap-3">
+                    <FiTruck className="w-6 h-6 text-red-500" />
+                    <h2 className="text-lg font-bold uppercase tracking-widest">
+                      {checkoutStep === 1
+                        ? "Delivery Details"
+                        : "Payment"}
+                    </h2>
+                  </div>
+                  <div className="text-xs font-medium text-white/70">
+                    Step {checkoutStep} of 2
+                  </div>
+                </div>
+
+                <div className="p-8">
+                  {/* Stepper */}
+                  <div className="flex items-center gap-3 mb-8">
+                    <div className={`flex-1 h-1 rounded-full ${checkoutStep >= 1 ? "bg-[#0b1d3d]" : "bg-gray-200"}`} />
+                    <div className={`flex-1 h-1 rounded-full ${checkoutStep >= 2 ? "bg-[#0b1d3d]" : "bg-gray-200"}`} />
+                  </div>
+
+                  {checkoutStep === 1 && (
+                    <form onSubmit={handleSubmit(onShippingSubmit)} className="space-y-8">
+                      <div className="grid md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="text-xs font-black uppercase text-gray-400 tracking-widest">
+                            First Name
+                          </label>
+                          <input
+                            {...register("firstName", { required: "First name is required" })}
+                            className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:ring-2 focus:ring-[#0b1d3d] outline-none transition-all"
+                            placeholder="John"
+                          />
+                          {errors.firstName && (
+                            <p className="text-red-500 text-[10px] font-bold uppercase">
+                              {errors.firstName.message}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="text-xs font-black uppercase text-gray-400 tracking-widest">
+                            Last Name
+                          </label>
+                          <input
+                            {...register("lastName", { required: "Last name is required" })}
+                            className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:ring-2 focus:ring-[#0b1d3d] outline-none transition-all"
+                            placeholder="Doe"
+                          />
+                          {errors.lastName && (
+                            <p className="text-red-500 text-[10px] font-bold uppercase">
+                              {errors.lastName.message}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="text-xs font-black uppercase text-gray-400 tracking-widest">
+                            Email Address
+                          </label>
+                          <input
+                            {...register("email", { required: "Email is required" })}
+                            type="email"
+                            className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:ring-2 focus:ring-[#0b1d3d] outline-none transition-all"
+                            placeholder="john@example.com"
+                          />
+                          {errors.email && (
+                            <p className="text-red-500 text-[10px] font-bold uppercase">
+                              {errors.email.message}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="text-xs font-black uppercase text-gray-400 tracking-widest">
+                            Phone Number
+                          </label>
+                          <input
+                            {...register("phoneNumber", { required: "Phone number is required" })}
+                            className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:ring-2 focus:ring-[#0b1d3d] outline-none transition-all"
+                            placeholder="+91 9999999999"
+                          />
+                          {errors.phoneNumber && (
+                            <p className="text-red-500 text-[10px] font-bold uppercase">
+                              {errors.phoneNumber.message}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-black uppercase text-gray-400 tracking-widest">
+                          Street Address
+                        </label>
+                        <input
+                          {...register("address", { required: "Address is required" })}
+                          className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:ring-2 focus:ring-[#0b1d3d] outline-none transition-all"
+                          placeholder="123 Street Name"
+                        />
+                        {errors.address && (
+                          <p className="text-red-500 text-[10px] font-bold uppercase">
+                            {errors.address.message}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="grid md:grid-cols-3 gap-6">
+                        <div className="space-y-2">
+                          <label className="text-xs font-black uppercase text-gray-400 tracking-widest">
+                            City
+                          </label>
+                          <input
+                            {...register("city", { required: "City is required" })}
+                            className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:ring-2 focus:ring-[#0b1d3d] outline-none transition-all"
+                            placeholder="Melbourne"
+                          />
+                          {errors.city && (
+                            <p className="text-red-500 text-[10px] font-bold uppercase">
+                              {errors.city.message}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="text-xs font-black uppercase text-gray-400 tracking-widest">
+                            Country
+                          </label>
+                          <input
+                            {...register("country", { required: "Country is required" })}
+                            className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:ring-2 focus:ring-[#0b1d3d] outline-none transition-all"
+                            placeholder="Australia"
+                          />
+                          {errors.country && (
+                            <p className="text-red-500 text-[10px] font-bold uppercase">
+                              {errors.country.message}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="text-xs font-black uppercase text-gray-400 tracking-widest">
+                            Zip Code
+                          </label>
+                          <input
+                            {...register("zipCode", { required: "Zip code is required" })}
+                            className="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-4 text-sm font-medium focus:ring-2 focus:ring-[#0b1d3d] outline-none transition-all"
+                            placeholder="3000"
+                          />
+                          {errors.zipCode && (
+                            <p className="text-red-500 text-[10px] font-bold uppercase">
+                              {errors.zipCode.message}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full bg-[#0b1d3d] hover:bg-[#162542] text-white py-5 rounded-2xl font-black uppercase tracking-[0.2em] text-sm transition-all shadow-2xl active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3"
+                      >
+                        {loading ? (
+                          <>
+                            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            Loading...
+                          </>
+                        ) : (
+                          <>
+                            <FiLock className="w-4 h-4" />
+                            Continue to Review {currency}
+                            {getNumber(grandTotal)}
+                          </>
+
+                        )}
+                      </button>
+                    </form>
+                  )}
+
+                  {checkoutStep === 2 && (
+                    <div className="space-y-8">
+                      {!shippingData ? (
+                        <div className="bg-yellow-50 border border-yellow-200 text-yellow-900 rounded-xl p-5">
+                          Delivery details missing. Please go back and fill your information.
+                          <div className="mt-4">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCheckoutStep(1);
+                              }}
+                              className="w-full bg-[#0b1d3d] hover:bg-[#162542] text-white py-3 rounded-xl font-bold"
+                            >
+                              Back to Details
+                            </button>
+                          </div>
+                        </div>
+                      ) : false ? (
+                        <div className="space-y-8">
+                          <div className="bg-white border border-gray-100 rounded-2xl p-5">
+                            <h4 className="text-sm font-black uppercase tracking-widest text-[#0b1d3d]">
+                              Delivery Details Preview
+                            </h4>
+                            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                              <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                  Name
+                                </p>
+                                <p className="text-sm font-bold text-gray-900 mt-1">
+                                  {shippingData.firstName} {shippingData.lastName}
+                                </p>
+                              </div>
+                              <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                  Contact
+                                </p>
+                                <p className="text-sm font-bold text-gray-900 mt-1">
+                                  {shippingData.phoneNumber}
+                                </p>
+                                <p className="text-[12px] text-gray-600 mt-1">
+                                  {shippingData.email}
+                                </p>
+                              </div>
+                              <div className="bg-gray-50 rounded-xl p-4 border border-gray-100 md:col-span-2">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                  Address
+                                </p>
+                                <p className="text-sm font-bold text-gray-900 mt-1">
+                                  {shippingData.address}
+                                </p>
+                                <p className="text-[12px] text-gray-600 mt-1">
+                                  {shippingData.city}, {shippingData.country} - {shippingData.zipCode}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="mt-4">
+                              <button
+                                type="button"
+                                disabled={loading}
+                                onClick={() => {
+                                  setCheckoutStep(1);
+                                }}
+                                className="w-full bg-white border border-gray-200 text-gray-900 py-3 rounded-xl font-bold hover:bg-gray-50 disabled:opacity-50"
+                              >
+                                Edit Details
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="bg-gray-50 border border-gray-100 rounded-2xl p-5 space-y-4">
+                            <div className="flex items-center gap-3">
+                              <FiLock className="w-5 h-5 text-[#0b1d3d]" />
+                              <h3 className="text-sm font-black uppercase tracking-widest text-[#0b1d3d]">
+                                Lock Quantity (One Time)
+                              </h3>
+                            </div>
+                            <p className="text-sm text-gray-600">
+                              Order Summary ke andar aap quantity ko increase/decrease kar sakte ho. Confirm karne ke baad quantity lock ho jayegi.
+                            </p>
+                            <button
+                              type="button"
+                              disabled={loading || orderItems.length === 0}
+                              onClick={() => setCheckoutStep(2)}
+                              className="w-full bg-[#0b1d3d] hover:bg-[#162542] text-white py-5 rounded-2xl font-black uppercase tracking-[0.2em] text-sm transition-all shadow-2xl active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3"
+                            >
+                              <FiLock className="w-4 h-4" />
+                              Confirm Quantity
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-8">
+                          <div className="grid md:grid-cols-2 gap-6">
+                            <div className="bg-white border border-gray-100 rounded-2xl p-5">
+                              <h4 className="text-sm font-black uppercase tracking-widest text-[#0b1d3d]">
+                                Product
+                              </h4>
+
+                              <div className="mt-4 w-full aspect-[4/3] bg-gray-50 rounded-xl border border-gray-100 overflow-hidden relative">
+                                {orderItems?.[0]?.image ? (
+                                  <Image
+                                    src={orderItems?.[0]?.image}
+                                    alt={orderItems?.[0]?.name || "Product"}
+                                    fill
+                                    className="object-cover"
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-gray-300">
+                                    <FiShoppingBag className="w-8 h-8" />
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="mt-3">
+                                <p className="text-sm font-bold text-gray-900 line-clamp-1 truncate">
+                                  {orderItems?.[0]?.name}
+                                </p>
+                                <p className="text-[12px] text-gray-500 font-medium mt-1">
+                                  Qty: {orderItems?.[0]?.quantity}
+                                </p>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest leading-none mt-1">(Incl. GST)</p>
+                              </div>
+
+                            </div>
+
+                            <div className="bg-white border border-gray-100 rounded-2xl p-5">
+                              <h4 className="text-sm font-black uppercase tracking-widest text-[#0b1d3d]">
+                                User Details
+                              </h4>
+                              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                    Name
+                                  </p>
+                                  <p className="text-sm font-bold text-gray-900 mt-1">
+                                    {shippingData.firstName} {shippingData.lastName}
+                                  </p>
+                                </div>
+                                <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                    Contact
+                                  </p>
+                                  <p className="text-sm font-bold text-gray-900 mt-1">
+                                    {shippingData.phoneNumber}
+                                  </p>
+                                  <p className="text-[12px] text-gray-600 mt-1">
+                                    {shippingData.email}
+                                  </p>
+                                </div>
+                                <div className="bg-gray-50 rounded-xl p-4 border border-gray-100 md:col-span-2">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                                    Address
+                                  </p>
+                                  <p className="text-sm font-bold text-gray-900 mt-1">
+                                    {shippingData.address}
+                                  </p>
+                                  <p className="text-[12px] text-gray-600 mt-1">
+                                    {shippingData.city}, {shippingData.country} - {shippingData.zipCode}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="mt-4">
+                                <button
+                                  type="button"
+                                  disabled={loading}
+                                  onClick={() => setCheckoutStep(1)}
+                                  className="w-full bg-white border border-gray-200 text-gray-900 py-3 rounded-xl font-bold hover:bg-gray-50 disabled:opacity-50"
+                                >
+                                  Edit Details
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <FiCreditCard className="w-5 h-5 text-red-500" />
+                            <h3 className="text-sm font-black uppercase tracking-widest text-[#0b1d3d]">
+                              Select Payment Method
+                            </h3>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div
+                              onClick={() => setPaymentMethod("Cash")}
+                              className={`p-6 border-2 rounded-2xl cursor-pointer transition-all flex items-center justify-between ${paymentMethod === "Cash"
+                                  ? "border-[#0b1d3d] bg-blue-50/50"
+                                  : "border-gray-100 bg-white hover:border-gray-200"
+                                }`}
+                            >
+                              <div className="flex items-center gap-4">
+                                <div
+                                  className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${paymentMethod === "Cash"
+                                      ? "border-[#0b1d3d]"
+                                      : "border-gray-300"
+                                    }`}
+                                >
+                                  {paymentMethod === "Cash" && (
+                                    <div className="w-2.5 h-2.5 rounded-full bg-[#0b1d3d]" />
+                                  )}
+                                </div>
+                                <div>
+                                  <p className="font-bold text-sm text-[#0b1d3d]">
+                                    Cash On Delivery
+                                  </p>
+                                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter">
+                                    Pay when you receive
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div
+                              onClick={() => setPaymentMethod("Razorpay")}
+                              className={`p-6 border-2 rounded-2xl cursor-pointer transition-all flex items-center justify-between opacity-50 ${paymentMethod === "Razorpay"
+                                  ? "border-[#0b1d3d] bg-blue-50/50 opacity-100"
+                                  : "border-gray-100 bg-white opacity-50 hover:opacity-100"
+                                }`}
+                            >
+                              <div className="flex items-center gap-4">
+                                <div
+                                  className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${paymentMethod === "Razorpay"
+                                      ? "border-[#0b1d3d]"
+                                      : "border-gray-300"
+                                    }`}
+                                >
+                                  {paymentMethod === "Razorpay" && (
+                                    <div className="w-2.5 h-2.5 rounded-full bg-[#0b1d3d]" />
+                                  )}
+                                </div>
+                                <div>
+                                  <p className="font-bold text-sm text-[#0b1d3d]">
+                                    Razorpay
+                                  </p>
+                                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter">
+                                    UPI / Card / NetBanking
+                                  </p>
+                                </div>
+                              </div>
+                              <FiLock className="text-gray-400" />
+                            </div>
+                          </div>
+
+                          <div className="pt-2">
+                            <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 flex items-start gap-4 mb-6">
+                              <FiLock className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                              <p className="text-[11px] text-blue-800 font-medium leading-relaxed">
+                                Your transaction is secure and encrypted. By placing the order, you agree to our terms of service and privacy policy.
+                              </p>
+                            </div>
+
+                            <button
+                              type="button"
+                              disabled={loading || !shippingData}
+                              onClick={placeOrder}
+                              className="w-full bg-[#0b1d3d] hover:bg-[#162542] text-white py-5 rounded-2xl font-black uppercase tracking-[0.2em] text-sm transition-all shadow-2xl active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-3"
+                            >
+                              {loading ? (
+                                <>
+                                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                  Processing...
+                                </>
+                              ) : (
+                                <>
+                                  <FiLock className="w-4 h-4" />
+                                  {paymentMethod === "Cash"
+                                    ? `Place Order ${currency}${getNumber(grandTotal)}`
+                                    : `Pay & Place Order ${currency}${getNumber(grandTotal)}`}
+                                </>
+                              )}
+                            </button>
+
+                            <div className="mt-4">
+                              <button
+                                type="button"
+                                disabled={loading}
+                                onClick={() => {
+                                  setCheckoutStep(1);
+                                }}
+                                className="w-full bg-white border border-gray-200 text-gray-900 py-3.5 rounded-2xl font-bold text-sm hover:bg-gray-50 transition-all active:scale-[0.98] disabled:opacity-50"
+                              >
+                                Back to Details
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Right Column: Summary */}
+            <div className="lg:w-1/3">
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden sticky top-28">
+                <div className="p-6 border-b border-gray-100 flex items-center gap-3 bg-gray-50">
+                  <FiShoppingBag className="w-5 h-5 text-[#0b1d3d]" />
+                  <h3 className="text-sm font-black uppercase tracking-widest text-[#0b1d3d]">
+                    Order Summary
+                  </h3>
+                </div>
+
+                <div className="p-6 space-y-6">
+                  <div className="max-h-[300px] overflow-y-auto space-y-5 pr-2 custom-scrollbar">
+                    {orderItems.map((item) => {
+                      const minQty = parseInt(item.minQty) || 1;
+                      const isBuyNowItem = !!buyNowItem;
+                      return (
+                        <div key={item.id} className="flex gap-4 items-center group">
+                          <div className="w-16 h-16 relative rounded-xl overflow-hidden border border-gray-100 flex-shrink-0 bg-gray-50">
+                            {item.image ? (
+                              <Image src={item.image} alt={item.name} fill className="object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-gray-200">
+                                <FiShoppingBag />
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex-grow min-w-0">
+                            <h4 className="text-[13px] font-bold text-gray-900 line-clamp-1 truncate">
+                              {item.name}
+                            </h4>
+
+                            <div className="flex items-center justify-between mt-1">
+                              <p className="text-[11px] text-gray-500 font-medium">
+                                Qty: {item.quantity}
+                              </p>
+                              <p className="text-sm font-bold text-[#0b1d3d]">
+                                {currency}
+                                {getNumber(item.itemTotal)}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-3 mt-3">
+                              <div className="flex items-center border border-gray-100 rounded-lg bg-gray-50/50 p-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (isBuyNowItem) {
+                                      decrementBuyNow();
+                                    } else {
+                                      updateItemQuantity(
+                                        item.id,
+                                        Math.max(minQty, item.quantity - 1)
+                                      );
+                                    }
+                                  }}
+                                  className="p-1 rounded-md hover:bg-white hover:shadow-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed no-green-button"
+                                  disabled={
+                                    checkoutStep === 2 || item.quantity <= minQty
+                                  }
+                                >
+                                  <FiMinus className="w-3 h-3 text-gray-600" />
+                                </button>
+
+                                <span className="text-xs font-bold text-gray-900 w-8 text-center">
+                                  {item.quantity}
+                                </span>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (isBuyNowItem) {
+                                      incrementBuyNow();
+                                    } else {
+                                      updateItemQuantity(item.id, item.quantity + 1);
+                                    }
+                                  }}
+                                  disabled={checkoutStep === 2}
+                                  className="p-1 rounded-md hover:bg-white hover:shadow-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed no-green-button"
+                                >
+                                  <FiPlus className="w-3 h-3 text-gray-600" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="pt-6 border-t border-gray-100 space-y-3">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-gray-500 font-medium">Subtotal</span>
+                      <span className="text-gray-900 font-bold">
+                        {currency}
+                        {getNumber(currentTotal)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-gray-500 font-medium">Delivery Charges</span>
+                      <span className="text-green-600 font-bold uppercase text-[10px] tracking-widest">
+                        {deliveryCharges === 0
+                          ? "Free"
+                          : `${currency}${getNumber(deliveryCharges)}`}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center pt-3 mt-3 border-t-2 border-dashed border-gray-100">
+                      <span className="text-base font-black text-[#0b1d3d] uppercase tracking-widest">
+                        Grand Total
+                      </span>
+                      <div className="flex flex-col items-end">
+                        <span className="text-2xl font-black text-[#0b1d3d]">
+                          {currency}
+                          {getNumber(grandTotal)}
+                        </span>
+                        <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest -mt-1">
+                          (Inclusive of GST)
+                        </span>
+                      </div>
+                    </div>
+
+                    {orderItems.some(item => (item.price - (item.basePrice || item.price)) > 0) && (
+                      <div className="flex justify-end pt-1">
+                        <p className="text-[11px] text-green-600 font-bold uppercase tracking-tighter flex items-center gap-1 bg-green-50 px-2 py-1 rounded">
+                          Includes {currency}{getNumber(orderItems.reduce((acc, item) => acc + ((item.price - (item.basePrice || item.price)) * item.quantity), 0))} GST
+                        </p>
+                      </div>
+                    )}
+
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Layout>
+  );
+};
+
+export default Checkout;
