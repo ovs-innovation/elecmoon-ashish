@@ -50,7 +50,8 @@ app.use(cors({
   origin: [
     "http://elecmoon.vastoratech.com",
     "https://elecmoon.vastoratech.com",
-     "https://elecmoon.vastoratech.com/api"
+     "https://elecmoon.vastoratech.com/api",
+    "http://elecmoon.vastoratech.com/api"
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
