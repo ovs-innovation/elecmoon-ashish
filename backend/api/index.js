@@ -2,9 +2,9 @@ require("dotenv").config();
 const express = require("express");
 const helmet = require("helmet");
 const cors = require("cors");
-const path = require("path");
 
 const { connectDB } = require("../config/db");
+
 const productRoutes = require("../routes/productRoutes");
 const customerRoutes = require("../routes/customerRoutes");
 const adminRoutes = require("../routes/adminRoutes");
@@ -24,85 +24,91 @@ const commentRoutes = require("../routes/commentRoutes");
 const reviewRoutes = require("../routes/reviewRoutes");
 const batteryServiceRoutes = require("../routes/batteryServiceRoutes");
 const shortVideoRoutes = require("../routes/shortVideoRoutes");
-const { isAuth, isAdmin } = require("../config/auth")
+
+const { isAuth } = require("../config/auth");
 
 const app = express();
 
-// Database connection middleware
-app.use(async (req, res, next) => {
-  try {
-    await connectDB();
-    next();
-  } catch (err) {
-    res.status(503).json({
-      message: "Database connection failed",
-      error: err.message
-    });
-  }
-});
-
 app.set("trust proxy", 1);
 
+// ✅ CONNECT DB ONCE (not per request)
+connectDB();
+
+// ✅ MIDDLEWARES
 app.use(express.json({ limit: "4mb" }));
 app.use(helmet());
 
+// ✅ ALLOWED ORIGINS
+const allowedOrigins = [
+  "http://elecmoon.vastoratech.com",
+  "https://elecmoon.vastoratech.com"
+];
+
+// ✅ CORS CONFIG
 app.use(cors({
-  origin: [
-    "http://elecmoon.vastoratech.com",
-    "https://elecmoon.vastoratech.com",
-     "https://elecmoon.vastoratech.com/api",
-    "http://elecmoon.vastoratech.com/api"
-  ],
+  origin: function (origin, callback) {
+    // allow requests with no origin (mobile apps, Postman)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error("CORS not allowed: " + origin));
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"]
 }));
 
+// ✅ HANDLE PREFLIGHT REQUESTS
+app.options("*", cors());
 
-//root route
+// ✅ ROOT ROUTE
 app.get("/", (req, res) => {
   res.send("App works properly!");
 });
 
-//this for route will need for store front, also for admin dashboard
-app.use("/api/products/", productRoutes);
-app.use("/api/category/", categoryRoutes);
-app.use("/api/coupon/", couponRoutes);
-app.use("/api/customer/", customerRoutes);
-app.use("/api/order/", isAuth, customerOrderRoutes);
-app.use("/api/attributes/", attributeRoutes);
-app.use("/api/setting/", settingRoutes);
-app.use("/api/currency/", isAuth, currencyRoutes);
-app.use("/api/language/", languageRoutes);
-app.use("/api/notification/", isAuth, notificationRoutes);
-app.use("/api/leads/", leadRoutes);
-app.use("/api/blogs/", blogRoutes);
-app.use("/api/services/", serviceRoutes);
-app.use("/api/comments/", commentRoutes);
-app.use("/api/reviews/", reviewRoutes);
-app.use("/api/battery-service/", batteryServiceRoutes);
-app.use("/api/short-videos/", shortVideoRoutes);
+// ✅ ROUTES
+app.use("/api/products", productRoutes);
+app.use("/api/category", categoryRoutes);
+app.use("/api/coupon", couponRoutes);
+app.use("/api/customer", customerRoutes);
+app.use("/api/order", isAuth, customerOrderRoutes);
+app.use("/api/attributes", attributeRoutes);
+app.use("/api/setting", settingRoutes);
+app.use("/api/currency", isAuth, currencyRoutes);
+app.use("/api/language", languageRoutes);
+app.use("/api/notification", isAuth, notificationRoutes);
+app.use("/api/leads", leadRoutes);
+app.use("/api/blogs", blogRoutes);
+app.use("/api/services", serviceRoutes);
+app.use("/api/comments", commentRoutes);
+app.use("/api/reviews", reviewRoutes);
+app.use("/api/battery-service", batteryServiceRoutes);
+app.use("/api/short-videos", shortVideoRoutes);
 
-//if you not use admin dashboard then these two route will not needed.
-app.use("/api/admin/", adminRoutes);
-app.use("/api/orders/", orderRoutes);
+// ADMIN
+app.use("/api/admin", adminRoutes);
+app.use("/api/orders", orderRoutes);
 
-// Use express's default error handling middleware
-app.use((err, req, res, next) => {
-  if (res.headersSent) return next(err);
-  res.status(400).json({ message: err.message });
-});
-
-// Serve static files from the "dist" directory
+// ✅ STATIC FILES
 app.use("/static", express.static("public"));
 
-// Serve the index.html file for all routes
-// app.get("*", (req, res) => {
-//   res.status(404).send("Not Found");
-// });
+// ✅ ERROR HANDLER
+app.use((err, req, res, next) => {
+  console.error("Error:", err.message);
+  if (res.headersSent) return next(err);
 
+  res.status(400).json({
+    success: false,
+    message: err.message
+  });
+});
 
+// ✅ SERVER START
 const PORT = process.env.PORT || 5058;
 
-
-app.listen(PORT, () => console.log(`server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
